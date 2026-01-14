@@ -4,13 +4,13 @@ from fastapi.responses import FileResponse
 from gtts import gTTS
 import os
 import uuid
-from pydub import AudioSegment, effects
 
 app = FastAPI()
 
+# React ကနေ လှမ်းခေါ်လို့ရအောင် ခွင့်ပြုပေးခြင်း
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Production မှာဆိုရင် React ရဲ့ URL (e.g. localhost:3000) ပဲ ထည့်ပါ
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -20,42 +20,53 @@ if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
 def remove_file(path: str):
+    """အသံဖိုင် ပေးပို့ပြီးရင် ပြန်ဖျက်ပေးမယ့် function"""
     if os.path.exists(path):
         os.remove(path)
 
 @app.get("/tts")
-async def text_to_speech(background_tasks: BackgroundTasks, text: str, lang: str = "my", speed: float = 1.3):
+async def text_to_speech(background_tasks: BackgroundTasks, text: str, lang: str = "my", speed: float = 1.15):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
 
-    file_id = str(uuid.uuid4())
-    file_path = os.path.join(TEMP_DIR, f"{file_id}.mp3")
-
     try:
-        # ၁။ gTTS ဖြင့် အသံဖိုင်ထုတ်ယူခြင်း
+        file_id = str(uuid.uuid4())
+        file_path = os.path.join(TEMP_DIR, f"{file_id}.mp3")
+        
+        # gTTS အသုံးပြုခြင်း
         tts = gTTS(text=text, lang=lang)
         tts.save(file_path)
 
-        # ၂။ Speed ပြောင်းလဲခြင်း (speed အသေထားချင်ရင် function ထဲမှာ 1.3 လို့ ပြင်ထားနိုင်သည်)
-        if abs(speed - 1.0) > 0.01:
-            try:
-                audio = AudioSegment.from_file(file_path)
-                # chunk_size ကို သတ်မှတ်ပေးခြင်းက ပိုပြီး တည်ငြိမ်စေပါသည်
-                sped_up = effects.speedup(audio, playback_speed=speed, chunk_size=150, crossfade=25)
-                sped_up.export(file_path, format="mp3")
-            except Exception as e:
-                print(f"Speed adjustment failed: {e}")
+        # အသံကို ဆင့်နှုန်း တစ်ဆင့်မြန်အောင် ပြင်ချင်ရင် `speed` param (1.0 = normal)
+        try:
+            # speed ကို ရိုးရိုး သတ်မှတ်ထားခြင်း - 0.5 .. 3.0 အတွင်းသိမ်း
+            if speed is None:
+                speed = 1.0
+            speed = float(speed)
+            if speed <= 0:
+                speed = 1.0
+            if 0.5 <= speed <= 3.0 and abs(speed - 1.0) > 1e-6:
+                try:
+                    from pydub import AudioSegment, effects
+
+                    audio = AudioSegment.from_file(file_path)
+                    # pydub.effects.speedup preserves pitch better than simple frame_rate change
+                    sped = effects.speedup(audio, playback_speed=speed)
+                    sped.export(file_path, format="mp3")
+                except Exception:
+                    # If pydub/ffmpeg not available or fails, ignore and return original file
+                    pass
+        except Exception:
+            pass
         
+        # ဖိုင်ပို့ပြီးတာနဲ့ နောက်ကွယ်မှာ ပြန်ဖျက်ခိုင်းခြင်း (Storage မပြည့်အောင်)
         background_tasks.add_task(remove_file, file_path)
+        
         return FileResponse(file_path, media_type="audio/mpeg")
     
     except Exception as e:
-        if os.path.exists(file_path):
-            os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    # Render အတွက် Port ကို dynamic ဖတ်ရန် ပြင်ဆင်ခြင်း
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
